@@ -9,3 +9,8 @@ venv/
 *_pb2_grpc.py
 .pytest_cache/
 .DS_Store
+
+
+
+# Dados gerados pelo servico de ingestao
+servicos/ingestao/indice.json
