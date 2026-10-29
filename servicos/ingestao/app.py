@@ -6,7 +6,7 @@ TAREFA 1: persistir o indice em disco para nao perder ao reiniciar.
 
 Rodar: uvicorn servicos.ingestao.app:app --port 8001
 """
-
+import os
 import json
 from pathlib import Path
 
@@ -21,7 +21,12 @@ vetorizador = Vetorizador()
 INDICE = []
 
 # Arquivo onde os documentos serao armazenados.
-ARQUIVO_INDICE = Path(__file__).resolve().parent / "indice.json"
+ARQUIVO_INDICE = Path(
+    os.getenv(
+        "ARQUIVO_INDICE",
+        str(Path(__file__).resolve().parent / "indice.json")
+    )
+)
 
 
 class Documento(BaseModel):
@@ -35,7 +40,7 @@ def salvar_indice():
         {"texto": item["texto"], "origem": item["origem"]}
         for item in INDICE
     ]
-
+    ARQUIVO_INDICE.parent.mkdir(parents=True, exist_ok=True)
     with open(ARQUIVO_INDICE, "w", encoding="utf-8") as arquivo:
         json.dump(documentos, arquivo, ensure_ascii=False, indent=4)
 

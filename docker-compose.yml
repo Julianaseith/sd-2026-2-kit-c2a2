@@ -1,7 +1,39 @@
+
 services:
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports:
+      - "6379:6379"
 
-  # TAREFA 4: acrescente aqui os tres servicos (ingestao, recuperacao, geracao)
-  # depois de escrever um Dockerfile para cada um.
+  ingestao:
+    build: .
+    command: uvicorn servicos.ingestao.app:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - dados_ingestao:/app/servicos/ingestao/dados
+    environment:
+      - ARQUIVO_INDICE=/app/servicos/ingestao/dados/indice.json
+
+  recuperacao:
+    build: .
+    command: uvicorn servicos.recuperacao.app:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    environment:
+      - URL_INGESTAO=http://ingestao:8001
+    depends_on:
+      - ingestao
+
+  geracao:
+    build: .
+    command: uvicorn servicos.geracao.app:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    environment:
+      - URL_RECUPERACAO=http://recuperacao:8002
+    depends_on:
+      - recuperacao
+
+volumes:
+  dados_ingestao:
