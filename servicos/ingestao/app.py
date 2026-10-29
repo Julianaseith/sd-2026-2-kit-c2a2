@@ -6,6 +6,7 @@ TAREFA 1: persistir o indice em disco para nao perder ao reiniciar.
 
 Rodar: uvicorn servicos.ingestao.app:app --port 8001
 """
+import redis    
 import os
 import json
 from pathlib import Path
@@ -27,7 +28,14 @@ ARQUIVO_INDICE = Path(
         str(Path(__file__).resolve().parent / "indice.json")
     )
 )
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
+cliente_redis = redis.Redis(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    decode_responses=True
+)
 
 class Documento(BaseModel):
     texto: str
@@ -100,6 +108,35 @@ def indexar(docs: list[Documento]):
     salvar_indice()
 
     return {"indexados": len(INDICE)}
+
+
+
+@app.post("/indexar-async", status_code=202)
+def indexar_async(docs: list[Documento]):
+    """Envia documentos para processamento pela fila Redis."""
+
+    documentos = [
+        {"texto": d.texto, "origem": d.origem}
+        for d in docs
+    ]
+
+    try:
+        cliente_redis.rpush(
+            "fila_ingestao",
+            json.dumps(documentos, ensure_ascii=False)
+        )
+
+    except redis.RedisError:
+        raise HTTPException(
+            status_code=503,
+            detail="Fila Redis indisponivel"
+        )
+
+    return {
+        "status": "enfileirado",
+        "documentos_recebidos": len(documentos)
+    }
+
 
 
 @app.get("/indice")

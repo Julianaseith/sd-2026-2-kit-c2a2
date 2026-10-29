@@ -14,6 +14,8 @@ services:
       - dados_ingestao:/app/servicos/ingestao/dados
     environment:
       - ARQUIVO_INDICE=/app/servicos/ingestao/dados/indice.json
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
 
   recuperacao:
     build: .
@@ -34,6 +36,20 @@ services:
       - URL_RECUPERACAO=http://recuperacao:8002
     depends_on:
       - recuperacao
+
+      
+  worker:
+    build: .
+    command: python -m servicos.mensageria.worker
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      URL_INGESTAO: http://ingestao:8001
+    depends_on:
+      - redis
+      - ingestao
+    restart: unless-stopped
+
 
 volumes:
   dados_ingestao:
