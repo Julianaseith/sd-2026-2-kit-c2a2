@@ -122,3 +122,144 @@ Se quiser usar outra linguagem, converse com o professor antes.
 **Posso usar IA para me ajudar a programar?** Sim. Este é um trabalho prático feito fora de
 sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funcionando** e as
 **decisões de arquitetura** — que você precisa saber explicar.
+
+
+
+
+---
+
+# Implementação do Grupo — C2.A2
+
+## Objetivo
+
+Desenvolver um sistema RAG distribuído utilizando três
+microsserviços independentes, comunicação REST,
+mensageria com Redis e mecanismos de resiliência.
+
+## Arquitetura
+
+```mermaid
+flowchart TD
+    A[Documentos] --> B[Ingestão - Porta 8001]
+    B --> C[(Índice persistente)]
+    D[Pergunta] --> E[Recuperação - Porta 8002]
+    E --> B
+    E --> F[Redis / Fila e Worker]
+    F --> G[Geração - Porta 8003]
+    G --> H[LLM com Circuit Breaker]
+    H --> I[Resposta fundamentada]
+```
+
+O diagrama apresenta a arquitetura planejada.
+A etapa de mensageria será validada na integração final.
+
+## Tecnologias utilizadas
+
+- Python e FastAPI: desenvolvimento das APIs REST.
+- Docker: execução isolada dos microsserviços.
+- Docker Compose: orquestração dos contêineres.
+- Redis: infraestrutura para mensageria.
+- Scikit-learn: vetorização dos documentos.
+- JSON: persistência dos documentos indexados.
+
+## Microsserviços
+
+### 1. Ingestão
+
+Responsável por receber documentos, gerar embeddings
+e armazenar o índice.
+
+Rotas:
+- POST /indexar
+- GET /indice
+- GET /saude
+
+Implementada persistência em JSON, com recuperação
+automática após reinicialização.
+
+### 2. Recuperação
+
+Responsável por receber uma pergunta, calcular
+similaridades e recuperar os trechos mais relevantes.
+
+Implementação em desenvolvimento.
+
+### 3. Geração
+
+Responsável por utilizar os trechos recuperados para
+produzir uma resposta fundamentada por meio do LLM.
+
+Deverá incluir circuit breaker, timeout e retentativas.
+
+Implementação em desenvolvimento.
+
+## Execução com Docker
+
+### Pré-requisitos
+
+- Docker Desktop
+- Docker Compose
+- Git
+
+### Instalação
+
+Clone o repositório:
+
+```bash
+git clone https://github.com/Julianaseith/sd-2026-2-kit-c2a2.git
+cd sd-2026-2-kit-c2a2
+```
+
+Construa as imagens e inicie os contêineres:
+
+```bash
+docker compose up --build -d
+```
+
+Verifique os serviços:
+
+```bash
+docker compose ps -a
+```
+
+### Portas
+| Serviço | Porta |
+|---|---|
+| Ingestão | 8001 |
+| Recuperação | 8002 |
+| Geração | 8003 |
+| Redis | 6379 |
+
+
+### Documentação das APIs
+
+- Ingestão: http://localhost:8001/docs
+- Recuperação: http://localhost:8002/docs
+- Geração: http://localhost:8003/docs
+
+### Encerrar os serviços
+
+```bash
+docker compose down
+```
+
+## Testes realizados
+
+- Indexação de documentos via POST /indexar.
+- Consulta de documentos via GET /saude.
+- Persistência de documentos após reiniciar o Uvicorn.
+- Inicialização dos quatro contêineres pelo Docker.
+- Persistência após recriação do contêiner de ingestão.
+
+## Testes pendentes
+
+- Comunicação completa entre os três microsserviços.
+- Mensageria com Redis e worker.
+- Resiliência do LLM diante de falhas.
+- Fluxo completo de pergunta e resposta.
+- Execução reproduzível após clonagem do zero.
+
+## Participação do grupo
+
+As contribuições individuais estão registradas
+no histórico de commits e Pull Requests do GitHub.
