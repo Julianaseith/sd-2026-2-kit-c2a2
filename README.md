@@ -138,17 +138,30 @@ mensageria com Redis e mecanismos de resiliência.
 
 ## Arquitetura
 
+
 ```mermaid
 flowchart TD
-    A[Documentos] --> B[Ingestão - Porta 8001]
-    B --> C[(Índice persistente)]
-    D[Pergunta] --> E[Recuperação - Porta 8002]
-    E --> B
-    E --> F[Redis / Fila e Worker]
-    F --> G[Geração - Porta 8003]
-    G --> H[LLM com Circuit Breaker]
-    H --> I[Resposta fundamentada]
+    A[Documentos] --> B[API Ingestao - Porta 8001]
+    B --> C[(Indice JSON persistente)]
+
+    D[Indexacao assincrona] --> E[Fila Redis]
+    E --> F[Worker Python]
+    F --> B
+
+    G[Pergunta do usuario] --> H[API Geracao - Porta 8003]
+    H --> I[API Recuperacao - Porta 8002]
+    I --> B
+    I --> H
+    H --> J[LLM com Retry, Timeout e Circuit Breaker]
+    J --> K[Resposta com fontes]
 ```
+
+O diagrama apresenta a arquitetura implementada com tres microsservicos independentes.
+
+A comunicacao entre os servicos utiliza REST. A mensageria com Redis e utilizada na indexacao assincrona de documentos, com processamento realizado por um worker Python.
+
+O sistema tambem utiliza mecanismos de resiliencia, incluindo timeout, retentativas e circuit breaker, para proteger a geracao de respostas.
+
 
 O diagrama apresenta a arquitetura planejada.
 A etapa de mensageria será validada na integração final.
@@ -177,122 +190,107 @@ Rotas:
 Implementada persistência em JSON, com recuperação
 automática após reinicialização.
 
+
 ### 2. Recuperação
 
-Responsável por receber uma pergunta, calcular
-similaridades e recuperar os trechos mais relevantes.
+Responsável por receber uma pergunta, calcular a similaridade entre a pergunta e os documentos indexados e recuperar os trechos mais relevantes.
 
-Implementação em desenvolvimento.
+**Rota principal:** POST `/buscar`
+
+**Funcionalidades implementadas:**
+- Consulta ao índice do microsserviço de ingestão via REST.
+- Vetorização da pergunta utilizando TF-IDF.
+- Cálculo de similaridade entre a pergunta e os documentos.
+- Ordenação dos resultados por relevância.
+- Seleção dos melhores documentos utilizando o parâmetro `top_k`.
+- Tratamento de falhas de comunicação com o serviço de ingestão.
+
+**Testes realizados:**
+- Consulta de documentos pela rota POST `/buscar`.
+- Recuperação de dois documentos sobre Redis.
+- Verificação das pontuações de similaridade.
+- Confirmação da ordenação dos resultados por relevância.
+
+**Status:** Implementado e testado.
+
+
 
 ### 3. Geração
 
-Responsável por utilizar os trechos recuperados para
-produzir uma resposta fundamentada por meio do LLM.
+Responsável por receber perguntas, consultar o microsserviço de recuperação e gerar respostas fundamentadas nos documentos indexados.
 
-Rotas:
-- POST /perguntar
-- GET /saude
-- POST /simulacao (somente para testes de falha)
+**Porta:** 8003
 
-Resiliência na chamada ao LLM:
-- Tempo-limite: cada tentativa é interrompida após `TIMEOUT_LLM` segundos (padrão 5).
-- Retentativas: até `MAX_TENTATIVAS` (padrão 3), apenas em falhas transitórias
-  (conexão, timeout, HTTP 429 e 5xx), com espera exponencial de 1s e 2s.
-  Erros permanentes (ex.: 401 por chave inválida) não são repetidos.
-- Circuit breaker: abre após `LIMITE_FALHAS` (padrão 3) requisições seguidas com falha,
-  recusa chamadas por `ESPERA_DISJUNTOR` segundos (padrão 20) e então libera uma
-  chamada de teste (meio-aberto): sucesso fecha o circuito, falha reabre.
-- Erro controlado: 504 quando o LLM não responde a tempo e 503 quando está
-  indisponível ou com o circuito aberto, devolvendo os trechos recuperados como fallback.
-- A chamada à recuperação também é protegida por um disjuntor próprio.
+**Rotas disponíveis:**
+- POST `/perguntar` — recebe uma pergunta e gera uma resposta.
+- POST `/simulacao` — configura falhas simuladas para testar a resiliência.
+- GET `/saude` — informa o estado do serviço e dos circuit breakers.
 
-#### Testes de resiliência
+**Funcionalidades implementadas:**
+- Comunicação REST com o microsserviço de recuperação.
+- Montagem do contexto a partir dos documentos relevantes.
+- Geração de respostas utilizando o cliente de LLM do kit.
+- Funcionamento em modo simulado, sem necessidade de chave de API.
+- Retorno dos documentos utilizados como contexto e das fontes.
+- Proteção das chamadas com circuit breaker, timeout e retentativas.
 
-Falhas simuladas pela rota `POST /simulacao` (Swagger em http://localhost:8003/docs):
+**Testes realizados:**
+- Geração de resposta com HTTP 200.
+- Recuperação de três documentos para fundamentar a resposta.
+- Simulação de duas falhas transitórias, com sucesso na terceira tentativa.
+- Simulação de timeout, com retorno HTTP 504.
+- Abertura do circuit breaker após três falhas.
+- Recuperação do funcionamento normal após desativar as falhas.
 
-```bash
-curl -X POST http://localhost:8003/simulacao -H "Content-Type: application/json" \
-  -d '{"modo":"transitoria","falhas":2}'
-```
+**Status:** Implementado e testado.
 
-Modos: `nenhuma`, `transitoria`, `timeout`, `indisponivel`.
-
-| Cenário | Resultado |
-|---|---|
-| Normal | 200, 1 tentativa, resposta com as fontes |
-| Falha transitória (2 falhas) | 200 na 3ª tentativa (~3s) |
-| Timeout | 504 após 3 tentativas de 5s (~18s) |
-| Indisponibilidade persistente | 503 após 3 tentativas; na 3ª requisição seguida com falha o circuito abre |
-| Circuito aberto | 503 imediato, sem chamar o LLM |
-| Após 20s, LLM ainda fora | chamada de teste falha e o circuito reabre |
-| Após 20s, LLM de volta | chamada de teste com sucesso e o circuito fecha |
-| Recuperação derrubada | 503; após 3 falhas o disjuntor da recuperação abre |
-
-## Execução com Docker
-
-### Pré-requisitos
-
-- Docker Desktop
-- Docker Compose
-- Git
-
-### Instalação
-
-Clone o repositório:
-
-```bash
-git clone https://github.com/Julianaseith/sd-2026-2-kit-c2a2.git
-cd sd-2026-2-kit-c2a2
-```
-
-Construa as imagens e inicie os contêineres:
-
-```bash
-docker compose up --build -d
-```
-
-Verifique os serviços:
-
-```bash
-docker compose ps -a
-```
-
-### Portas
-| Serviço | Porta |
-|---|---|
-| Ingestão | 8001 |
-| Recuperação | 8002 |
-| Geração | 8003 |
-| Redis | 6379 |
-
-
-### Documentação das APIs
-
-- Ingestão: http://localhost:8001/docs
-- Recuperação: http://localhost:8002/docs
-- Geração: http://localhost:8003/docs
-
-### Encerrar os serviços
-
-```bash
-docker compose down
-```
 
 ## Testes realizados
 
-- Indexação de documentos via POST /indexar.
-- Consulta de documentos via GET /saude.
-- Persistência de documentos após reiniciar o Uvicorn.
-- Inicialização dos quatro contêineres pelo Docker.
-- Persistência após recriação do contêiner de ingestão.
-- Resiliência do LLM: retentativas, timeout, abertura e recuperação do circuit breaker.
+### Ingestão e persistência
+- Indexação de documentos pela rota POST `/indexar`.
+- Persistência do índice em arquivo JSON.
+- Recuperação dos documentos após reinicialização do servidor.
+- Persistência após recriação do contêiner Docker.
 
-## Testes pendentes
+### Mensageria com Redis
+- Envio de documentos pela rota POST `/indexar-async`.
+- Confirmação de recebimento com HTTP 202.
+- Enfileiramento de mensagens no Redis.
+- Consumo das mensagens pelo worker Python.
+- Indexação dos documentos recebidos pela fila.
 
-- Comunicação completa entre os três microsserviços.
-- Mensageria com Redis e worker.
-- Fluxo completo de pergunta e resposta.
-- Execução reproduzível após clonagem do zero.
+### Recuperação
+- Consulta pela rota POST `/buscar`.
+- Vetorização e cálculo de similaridade.
+- Recuperação de documentos relevantes.
+- Ordenação dos resultados por similaridade.
+- Seleção da quantidade solicitada por `top_k`.
+
+### Geração e resiliência
+- Geração de respostas em modo simulado com HTTP 200.
+- Utilização de documentos recuperados como contexto.
+- Identificação das fontes utilizadas.
+- Teste de retry: duas falhas transitórias e sucesso na terceira tentativa.
+- Teste de timeout: retorno HTTP 504.
+- Teste de circuit breaker: abertura após três falhas.
+- Teste de recuperação: retorno ao funcionamento normal com HTTP 200.
+
+### Execução do zero
+- Clonagem do repositório em uma pasta nova.
+- Validação do Docker Compose.
+- Inicialização dos contêineres.
+- Indexação de três documentos novos.
+- Execução de uma pergunta pela rota POST `/perguntar`.
+- Resposta HTTP 200 com contexto e fontes.
+
+## Limitações conhecidas
+
+- O cliente LLM funciona em modo simulado quando não há chave de API.
+- O worker utiliza uma fila Redis simples, sem garantia de processamento exatamente uma vez.
+- Em determinadas falhas, mensagens podem ser perdidas ou processadas novamente.
+
+
 
 ## Participação do grupo
 
