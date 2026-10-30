@@ -189,9 +189,44 @@ Implementação em desenvolvimento.
 Responsável por utilizar os trechos recuperados para
 produzir uma resposta fundamentada por meio do LLM.
 
-Deverá incluir circuit breaker, timeout e retentativas.
+Rotas:
+- POST /perguntar
+- GET /saude
+- POST /simulacao (somente para testes de falha)
 
-Implementação em desenvolvimento.
+Resiliência na chamada ao LLM:
+- Tempo-limite: cada tentativa é interrompida após `TIMEOUT_LLM` segundos (padrão 5).
+- Retentativas: até `MAX_TENTATIVAS` (padrão 3), apenas em falhas transitórias
+  (conexão, timeout, HTTP 429 e 5xx), com espera exponencial de 1s e 2s.
+  Erros permanentes (ex.: 401 por chave inválida) não são repetidos.
+- Circuit breaker: abre após `LIMITE_FALHAS` (padrão 3) requisições seguidas com falha,
+  recusa chamadas por `ESPERA_DISJUNTOR` segundos (padrão 20) e então libera uma
+  chamada de teste (meio-aberto): sucesso fecha o circuito, falha reabre.
+- Erro controlado: 504 quando o LLM não responde a tempo e 503 quando está
+  indisponível ou com o circuito aberto, devolvendo os trechos recuperados como fallback.
+- A chamada à recuperação também é protegida por um disjuntor próprio.
+
+#### Testes de resiliência
+
+Falhas simuladas pela rota `POST /simulacao` (Swagger em http://localhost:8003/docs):
+
+```bash
+curl -X POST http://localhost:8003/simulacao -H "Content-Type: application/json" \
+  -d '{"modo":"transitoria","falhas":2}'
+```
+
+Modos: `nenhuma`, `transitoria`, `timeout`, `indisponivel`.
+
+| Cenário | Resultado |
+|---|---|
+| Normal | 200, 1 tentativa, resposta com as fontes |
+| Falha transitória (2 falhas) | 200 na 3ª tentativa (~3s) |
+| Timeout | 504 após 3 tentativas de 5s (~18s) |
+| Indisponibilidade persistente | 503 após 3 tentativas; na 3ª requisição seguida com falha o circuito abre |
+| Circuito aberto | 503 imediato, sem chamar o LLM |
+| Após 20s, LLM ainda fora | chamada de teste falha e o circuito reabre |
+| Após 20s, LLM de volta | chamada de teste com sucesso e o circuito fecha |
+| Recuperação derrubada | 503; após 3 falhas o disjuntor da recuperação abre |
 
 ## Execução com Docker
 
@@ -250,12 +285,12 @@ docker compose down
 - Persistência de documentos após reiniciar o Uvicorn.
 - Inicialização dos quatro contêineres pelo Docker.
 - Persistência após recriação do contêiner de ingestão.
+- Resiliência do LLM: retentativas, timeout, abertura e recuperação do circuit breaker.
 
 ## Testes pendentes
 
 - Comunicação completa entre os três microsserviços.
 - Mensageria com Redis e worker.
-- Resiliência do LLM diante de falhas.
 - Fluxo completo de pergunta e resposta.
 - Execução reproduzível após clonagem do zero.
 

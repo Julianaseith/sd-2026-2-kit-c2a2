@@ -34,6 +34,7 @@ services:
       - "8003:8003"
     environment:
       - URL_RECUPERACAO=http://recuperacao:8002
+      - LLM_API_KEY=${LLM_API_KEY:-}
     depends_on:
       - recuperacao
 
