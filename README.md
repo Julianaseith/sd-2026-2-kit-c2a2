@@ -1,298 +1,502 @@
-# Kit de Partida — C2.A2: RAG Distribuído em Microsserviços
 
-**Sistemas Distribuídos e Computação em Nuvem · FAESA · 2026/2**
-Prof. Howard Cruz Roatti · Lançado na Aula 8 (24/09) · Entrega na Aula 12 (29/10)
+# C2.A2 — RAG Distribuído em Microsserviços
+
+**Disciplina:** Sistemas Distribuídos e Computação em Nuvem — FAESA, 2026/2  
+**Professor:** Howard Cruz Roatti  
+**Repositório:** https://github.com/Julianaseith/sd-2026-2-kit-c2a2
+
+## Visão geral
+
+Este projeto implementa um sistema de perguntas e respostas baseado em RAG (Retrieval-Augmented Generation).
+
+O sistema recebe documentos, gera embeddings, recupera os trechos mais relevantes para uma pergunta e utiliza esses trechos como contexto para produzir uma resposta.
+
+O foco do trabalho é a engenharia de sistemas distribuídos, utilizando:
+
+- Três microsserviços independentes.
+- Comunicação REST.
+- Mensageria assíncrona com Redis.
+- Worker para processamento de documentos.
+- Persistência de dados.
+- Circuit breaker, timeout e retentativas.
+- Docker Compose para execução reproduzível.
+
+O cliente de LLM disponibilizado pelo kit do professor também funciona em modo simulado, sem necessidade de uma chave de API.
 
 ---
 
-## O que é isto
+## Arquitetura
 
-RAG (geração aumentada por recuperação) permite que um modelo de linguagem responda
-com base em documentos **seus**, sem retreinar nada. Do ponto de vista de sistemas
-distribuídos é um caso perfeito: **três responsabilidades distintas** que conversam
-entre si, com uma **dependência externa lenta e instável** (a API do LLM) que precisa
-ser protegida.
+```mermaid
+flowchart TD
+    U[Usuario] -->|POST /perguntar| G[Geracao - Porta 8003]
+    G -->|POST /buscar| R[Recuperacao - Porta 8002]
+    R -->|GET /indice| I[Ingestao - Porta 8001]
+    I <--> V[(Indice JSON persistente)]
+    R -->|Trechos relevantes| G
+    G --> L[LLM com Retry, Timeout e Circuit Breaker]
+    L --> A[Resposta com contexto e fontes]
 
-> **Sobre a IA neste trabalho:** todo contato com inteligência artificial aqui é
-> **chamada de biblioteca ou de API**. Você **não vai treinar modelos** nem precisar de
-> matemática de aprendizado de máquina. O modelo já vem pronto e configurado.
-> A sua nota vem da **engenharia distribuída**: arquitetura, comunicação, resiliência e
-> execução reproduzível — a sofisticação do modelo **não pontua**.
+    D[Documentos] -->|POST /indexar| I
+    D -->|POST /indexar-async| I
+    I -->|RPUSH| Q[(Fila Redis)]
+    Q -->|BLPOP| W[Worker Python]
+    W -->|POST /indexar| I
+```
+
+A arquitetura possui dois fluxos principais.
+
+### Fluxo de indexação
+
+O cliente envia documentos diretamente pela rota `POST /indexar` ou utiliza a rota `POST /indexar-async`.
+
+Na indexação assíncrona, os documentos são enviados para uma fila Redis. O worker consome as mensagens e encaminha os documentos ao serviço de ingestão por REST.
+
+Os documentos são armazenados em um índice JSON persistente.
+
+### Fluxo de perguntas e respostas
+
+O usuário envia uma pergunta ao microsserviço de geração.
+
+A geração consulta o microsserviço de recuperação, que obtém os documentos indexados e calcula as similaridades.
+
+Os trechos mais relevantes são utilizados como contexto para gerar uma resposta fundamentada nos documentos.
 
 ---
 
-## Como começar
+## Tecnologias utilizadas
 
-```bash
-# 1. Clone o kit e entre na pasta
-git clone https://github.com/howardroatti/sd-2026-2-kit-c2a2.git
-cd sd-2026-2-kit-c2a2
-
-# 2. Crie e ative o ambiente virtual
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# 3. Instale as dependências
-pip install -r requirements.txt
-```
-
-```bash
-# 4. Copie o arquivo de ambiente (funciona offline sem chave de LLM)
-cp .env.example .env
-
-# 5. Suba os três serviços, cada um em um terminal
-uvicorn servicos.ingestao.app:app     --port 8001
-uvicorn servicos.recuperacao.app:app  --port 8002
-uvicorn servicos.geracao.app:app      --port 8003
-
-# 6. Indexe os documentos de teste
-curl -X POST http://localhost:8001/indexar -H "Content-Type: application/json" \
-  -d '[{"texto":"O teorema CAP trata de consistencia e disponibilidade.","origem":"aula11"}]'
-
-# 7. Pergunte (funciona depois da TAREFA 2)
-curl -X POST http://localhost:8003/perguntar -H "Content-Type: application/json" \
-  -d '{"pergunta":"o que diz o teorema CAP?"}'
-```
+- Python: linguagem principal do projeto.
+- FastAPI: desenvolvimento das APIs REST.
+- Uvicorn: execução dos serviços.
+- Scikit-learn e TF-IDF: vetorização de documentos e perguntas.
+- Redis: mensageria assíncrona.
+- Docker: execução isolada dos serviços.
+- Docker Compose: gerenciamento dos contêineres.
+- JSON: persistência dos documentos.
+- Cliente LLM do kit: geração de respostas em modo simulado ou por API.
 
 ---
 
 ## Estrutura do projeto
 
-```
+```text
 sd-2026-2-kit-c2a2/
 ├── servicos/
 │   ├── comum/
-│   │   ├── embeddings.py       # PRONTO - vetorização offline
-│   │   ├── llm.py              # PRONTO - com modo simulado
-│   │   └── circuit_breaker.py  # PRONTO - modelo de referência
-│   ├── ingestao/app.py         # TAREFA 1
-│   ├── recuperacao/app.py      # TAREFA 2
-│   └── geracao/app.py          # TAREFA 3
-├── documentos/                 # base de teste para indexar
-├── docker-compose.yml          # TAREFA 4
-└── TAREFAS.md                  # <- comece por aqui
+│   │   ├── embeddings.py
+│   │   ├── llm.py
+│   │   └── circuit_breaker.py
+│   ├── ingestao/
+│   │   └── app.py
+│   ├── recuperacao/
+│   │   └── app.py
+│   ├── geracao/
+│   │   └── app.py
+│   └── mensageria/
+│       ├── __init__.py
+│       └── worker.py
+├── documentos/
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── TAREFAS.md
+└── README.md
 ```
 
 ---
-
-## O que você precisa fazer
-
-Abra o arquivo **`TAREFAS.md`**: ele lista o núcleo obrigatório item a item, indicando
-o arquivo e a aula de referência de cada um.
-
----
-
-## Como você será avaliado
-
-| Critério | Pontos |
-|---|---|
-| Arquitetura e decomposição em serviços | 1,5 |
-| Comunicação funcionando (REST / gRPC / mensageria) | 1,5 |
-| Resiliência e tratamento de falhas | 1,0 |
-| Execução reproduzível (README, container, deploy) | 1,0 |
-| **Sofisticação do modelo de IA** | **não pontua** |
-| **Total** | **5,0** |
-
-**Entrega:** no seu repositório do GitHub, **sem apresentação oral**. Grupos livres.
-
----
-
-## Aulas de referência
-
-- **Aula 8** — Mensageria, eventos e API Gateway
-- **Aula 10** — Replicação, consistência e CAP
-- **Aula 11** — Consenso (Raft) e resiliência: circuit breaker
-- **Aula 6** — IA como serviço (vocabulário: embedding, inferência, LLM)
-
----
-
-## Dúvidas frequentes
-
-**Preciso saber machine learning?** Não. O modelo já está pronto e você só chama uma função.
-
-**E se eu não tiver internet no laboratório?** Tudo neste kit funciona offline. O modelo é
-treinado localmente e o cliente de LLM tem modo simulado.
-
-**Posso trocar a linguagem?** O kit é em Python porque é o ecossistema usado nas aulas.
-Se quiser usar outra linguagem, converse com o professor antes.
-
-**Posso usar IA para me ajudar a programar?** Sim. Este é um trabalho prático feito fora de
-sala, e usar ferramentas de IA é realista. O que se avalia é o **sistema funcionando** e as
-**decisões de arquitetura** — que você precisa saber explicar.
-
-
-
-
----
-
-# Implementação do Grupo — C2.A2
-
-## Objetivo
-
-Desenvolver um sistema RAG distribuído utilizando três
-microsserviços independentes, comunicação REST,
-mensageria com Redis e mecanismos de resiliência.
-
-## Arquitetura
-
-
-```mermaid
-flowchart TD
-    A[Documentos] --> B[API Ingestao - Porta 8001]
-    B --> C[(Indice JSON persistente)]
-
-    D[Indexacao assincrona] --> E[Fila Redis]
-    E --> F[Worker Python]
-    F --> B
-
-    G[Pergunta do usuario] --> H[API Geracao - Porta 8003]
-    H --> I[API Recuperacao - Porta 8002]
-    I --> B
-    I --> H
-    H --> J[LLM com Retry, Timeout e Circuit Breaker]
-    J --> K[Resposta com fontes]
-```
-
-O diagrama apresenta a arquitetura implementada com tres microsservicos independentes.
-
-A comunicacao entre os servicos utiliza REST. A mensageria com Redis e utilizada na indexacao assincrona de documentos, com processamento realizado por um worker Python.
-
-O sistema tambem utiliza mecanismos de resiliencia, incluindo timeout, retentativas e circuit breaker, para proteger a geracao de respostas.
-
-
-O diagrama apresenta a arquitetura planejada.
-A etapa de mensageria será validada na integração final.
-
-## Tecnologias utilizadas
-
-- Python e FastAPI: desenvolvimento das APIs REST.
-- Docker: execução isolada dos microsserviços.
-- Docker Compose: orquestração dos contêineres.
-- Redis: infraestrutura para mensageria.
-- Scikit-learn: vetorização dos documentos.
-- JSON: persistência dos documentos indexados.
 
 ## Microsserviços
 
-### 1. Ingestão
+### 1. Ingestão — Porta 8001
 
-Responsável por receber documentos, gerar embeddings
-e armazenar o índice.
+Responsável por receber documentos, gerar embeddings e armazenar o índice.
 
-Rotas:
-- POST /indexar
-- GET /indice
-- GET /saude
+**Rotas:**
 
-Implementada persistência em JSON, com recuperação
-automática após reinicialização.
-
-
-### 2. Recuperação
-
-Responsável por receber uma pergunta, calcular a similaridade entre a pergunta e os documentos indexados e recuperar os trechos mais relevantes.
-
-**Rota principal:** POST `/buscar`
+- POST `/indexar` — indexação direta.
+- POST `/indexar-async` — envio para a fila Redis.
+- GET `/indice` — consulta aos documentos indexados.
+- GET `/saude` — verificação do serviço.
 
 **Funcionalidades implementadas:**
-- Consulta ao índice do microsserviço de ingestão via REST.
+
+- Recebimento de documentos.
+- Geração de embeddings.
+- Armazenamento em arquivo JSON.
+- Carregamento automático do índice ao iniciar.
+- Persistência utilizando volume Docker.
+- Envio de documentos para a fila Redis.
+
+**Status:** Implementado e testado.
+
+### 2. Recuperação — Porta 8002
+
+Responsável por receber uma pergunta e buscar os documentos mais relevantes.
+
+**Rotas:**
+
+- POST `/buscar`
+- GET `/saude`
+
+**Funcionalidades implementadas:**
+
+- Consulta ao índice da ingestão via REST.
 - Vetorização da pergunta utilizando TF-IDF.
-- Cálculo de similaridade entre a pergunta e os documentos.
-- Ordenação dos resultados por relevância.
-- Seleção dos melhores documentos utilizando o parâmetro `top_k`.
-- Tratamento de falhas de comunicação com o serviço de ingestão.
-
-**Testes realizados:**
-- Consulta de documentos pela rota POST `/buscar`.
-- Recuperação de dois documentos sobre Redis.
-- Verificação das pontuações de similaridade.
-- Confirmação da ordenação dos resultados por relevância.
+- Cálculo de similaridade.
+- Ordenação dos documentos por relevância.
+- Seleção dos melhores documentos utilizando `top_k`.
+- Tratamento de falhas de comunicação.
 
 **Status:** Implementado e testado.
 
+### 3. Geração — Porta 8003
 
+Responsável por receber perguntas, recuperar documentos e gerar respostas fundamentadas no conteúdo.
 
-### 3. Geração
+**Rotas:**
 
-Responsável por receber perguntas, consultar o microsserviço de recuperação e gerar respostas fundamentadas nos documentos indexados.
-
-**Porta:** 8003
-
-**Rotas disponíveis:**
-- POST `/perguntar` — recebe uma pergunta e gera uma resposta.
-- POST `/simulacao` — configura falhas simuladas para testar a resiliência.
-- GET `/saude` — informa o estado do serviço e dos circuit breakers.
+- POST `/perguntar`
+- POST `/simulacao`
+- GET `/saude`
 
 **Funcionalidades implementadas:**
-- Comunicação REST com o microsserviço de recuperação.
-- Montagem do contexto a partir dos documentos relevantes.
-- Geração de respostas utilizando o cliente de LLM do kit.
-- Funcionamento em modo simulado, sem necessidade de chave de API.
-- Retorno dos documentos utilizados como contexto e das fontes.
-- Proteção das chamadas com circuit breaker, timeout e retentativas.
 
-**Testes realizados:**
-- Geração de resposta com HTTP 200.
-- Recuperação de três documentos para fundamentar a resposta.
-- Simulação de duas falhas transitórias, com sucesso na terceira tentativa.
-- Simulação de timeout, com retorno HTTP 504.
-- Abertura do circuit breaker após três falhas.
-- Recuperação do funcionamento normal após desativar as falhas.
+- Comunicação REST com a recuperação.
+- Montagem do contexto a partir dos documentos.
+- Geração de respostas com o cliente LLM.
+- Funcionamento em modo simulado.
+- Identificação das fontes utilizadas.
+- Circuit breaker.
+- Timeout.
+- Retentativas.
+- Tratamento de erros HTTP 503 e 504.
 
 **Status:** Implementado e testado.
 
+---
+
+## Mensageria com Redis
+
+O sistema utiliza Redis para realizar indexação assíncrona de documentos.
+
+O funcionamento ocorre da seguinte maneira:
+
+1. A API recebe documentos pela rota `POST /indexar-async`.
+2. Os documentos são enviados para a fila `fila_ingestao`.
+3. O worker aguarda mensagens utilizando `BLPOP`.
+4. Quando uma mensagem chega, o worker realiza uma chamada REST para `POST /indexar`.
+5. A ingestão gera os embeddings e salva os documentos.
+6. O índice persistente é atualizado.
+
+A rota assíncrona retorna HTTP 202 quando a mensagem é aceita na fila.
+
+Esse retorno não significa que o documento já foi processado. O processamento pode ser confirmado pelos logs do worker e pela consulta ao índice.
+
+---
+
+## Como executar o projeto do zero
+
+### Pré-requisitos
+
+- Git instalado.
+- Docker Desktop ou Docker Engine.
+- Docker Compose.
+
+Não é necessário configurar um ambiente virtual Python para executar o projeto pelo Docker.
+
+### Passo 1 — Clonar o repositório
+
+```bash
+git clone https://github.com/Julianaseith/sd-2026-2-kit-c2a2.git
+cd sd-2026-2-kit-c2a2
+```
+
+### Passo 2 — Iniciar os contêineres
+
+```bash
+docker compose up --build -d
+```
+
+### Passo 3 — Verificar os serviços
+
+```bash
+docker compose ps -a
+```
+
+Os cinco serviços esperados são:
+
+| Serviço | Porta |
+|---|---|
+| Ingestão | 8001 |
+| Recuperação | 8002 |
+| Geração | 8003 |
+| Redis | 6379 |
+| Worker | Sem porta HTTP |
+
+Caso algum serviço apresente problemas, consulte os logs:
+
+```bash
+docker compose logs --tail=50
+```
+
+### Passo 4 — Acessar as APIs
+
+As documentações estão disponíveis em:
+
+- Ingestão: http://localhost:8001/docs
+- Recuperação: http://localhost:8002/docs
+- Geração: http://localhost:8003/docs
+
+### Passo 5 — Indexar documentos
+
+Acesse a API de ingestão e execute a rota `POST /indexar` com:
+
+```json
+[
+  {
+    "texto": "Sistemas distribuidos sao formados por computadores independentes que se comunicam por uma rede.",
+    "origem": "documento_sistemas"
+  },
+  {
+    "texto": "O Redis permite utilizar filas de mensagens para comunicacao assincrona entre microsservicos.",
+    "origem": "documento_redis"
+  },
+  {
+    "texto": "O circuit breaker interrompe temporariamente chamadas a servicos que apresentam falhas repetidas.",
+    "origem": "documento_resiliencia"
+  }
+]
+```
+
+Uma indexação bem-sucedida retorna HTTP 200 e a quantidade de documentos indexados.
+
+### Passo 6 — Fazer uma pergunta
+
+Acesse a API de geração e execute `POST /perguntar`:
+
+```json
+{
+  "pergunta": "Como o Redis ajuda na comunicacao entre microsservicos?"
+}
+```
+
+O resultado esperado é HTTP 200 com uma resposta fundamentada nos documentos recuperados.
+
+O sistema também informa o contexto e as fontes utilizadas.
+
+### Passo 7 — Encerrar os serviços
+
+```bash
+docker compose down
+```
+
+Não utilize `docker compose down -v` caso deseje preservar os documentos, pois essa opção remove os volumes do Docker Compose.
+
+---
+
+## Teste de mensageria
+
+Na API de ingestão, execute `POST /indexar-async`:
+
+```json
+[
+  {
+    "texto": "O Redis permite o processamento assincrono de mensagens em sistemas distribuidos.",
+    "origem": "teste_fila_redis"
+  }
+]
+```
+
+O resultado esperado é HTTP 202.
+
+Para verificar o processamento do worker:
+
+```bash
+docker compose logs --tail=30 worker
+```
+
+Em seguida, consulte a rota `GET /indice` para verificar se o documento foi armazenado.
+
+---
+
+## Resiliência e tratamento de falhas
+
+O microsserviço de geração utiliza três mecanismos principais de resiliência.
+
+### Timeout
+
+Define um limite de tempo para a tentativa de geração.
+
+Nos testes realizados, foi utilizado um limite de 5 segundos.
+
+### Retry
+
+Permite realizar novas tentativas quando ocorrem falhas transitórias.
+
+Nos testes, o sistema conseguiu responder na terceira tentativa após duas falhas simuladas.
+
+### Circuit Breaker
+
+O circuit breaker interrompe temporariamente novas chamadas quando detecta falhas repetidas.
+
+O mecanismo possui três estados:
+
+- Closed: permite chamadas normalmente.
+- Open: bloqueia temporariamente chamadas.
+- Half-open: permite testar a recuperação do serviço.
+
+O sistema foi testado com abertura do circuito após três falhas.
+
+---
+
+## Simulação de falhas
+
+A rota `POST /simulacao`, no serviço de geração, permite testar os mecanismos de resiliência.
+
+Os modos disponíveis são:
+
+- `nenhuma`
+- `transitoria`
+- `timeout`
+- `indisponivel`
+
+### Teste de retentativas
+
+Configuração:
+
+```json
+{
+  "modo": "transitoria",
+  "falhas": 2
+}
+```
+
+Resultado observado: HTTP 200 na terceira tentativa.
+
+### Teste de timeout
+
+Configuração:
+
+```json
+{
+  "modo": "timeout",
+  "falhas": 1
+}
+```
+
+Resultado observado: tratamento da falha com HTTP 504.
+
+### Teste de circuit breaker
+
+Configuração:
+
+```json
+{
+  "modo": "indisponivel",
+  "falhas": 10
+}
+```
+
+Resultado observado: abertura do circuit breaker após três falhas.
+
+O estado pode ser consultado pela rota `GET /saude`.
+
+### Restaurar funcionamento normal
+
+Após os testes, execute `POST /simulacao` com:
+
+```json
+{
+  "modo": "nenhuma",
+  "falhas": 0
+}
+```
+
+O disjuntor pode precisar aguardar seu intervalo de recuperação para voltar ao estado normal.
+
+---
 
 ## Testes realizados
 
 ### Ingestão e persistência
-- Indexação de documentos pela rota POST `/indexar`.
-- Persistência do índice em arquivo JSON.
-- Recuperação dos documentos após reinicialização do servidor.
-- Persistência após recriação do contêiner Docker.
 
-### Mensageria com Redis
-- Envio de documentos pela rota POST `/indexar-async`.
-- Confirmação de recebimento com HTTP 202.
-- Enfileiramento de mensagens no Redis.
-- Consumo das mensagens pelo worker Python.
-- Indexação dos documentos recebidos pela fila.
+- Indexação de documentos com HTTP 200.
+- Persistência do índice em JSON.
+- Recuperação após reinicialização do servidor.
+- Persistência após recriação do contêiner.
+
+### Mensageria
+
+- Envio de documentos com HTTP 202.
+- Enfileiramento no Redis.
+- Consumo de mensagens pelo worker.
+- Indexação dos documentos recebidos.
 
 ### Recuperação
+
 - Consulta pela rota POST `/buscar`.
-- Vetorização e cálculo de similaridade.
+- Cálculo de similaridade entre documentos e perguntas.
 - Recuperação de documentos relevantes.
-- Ordenação dos resultados por similaridade.
-- Seleção da quantidade solicitada por `top_k`.
+- Ordenação por pontuação.
+- Seleção de resultados com `top_k`.
 
 ### Geração e resiliência
-- Geração de respostas em modo simulado com HTTP 200.
-- Utilização de documentos recuperados como contexto.
-- Identificação das fontes utilizadas.
-- Teste de retry: duas falhas transitórias e sucesso na terceira tentativa.
-- Teste de timeout: retorno HTTP 504.
-- Teste de circuit breaker: abertura após três falhas.
-- Teste de recuperação: retorno ao funcionamento normal com HTTP 200.
 
-### Execução do zero
+- Geração de resposta com HTTP 200.
+- Utilização de documentos como contexto.
+- Identificação das fontes utilizadas.
+- Teste de retentativas.
+- Teste de timeout com HTTP 504.
+- Abertura do circuit breaker.
+- Recuperação do funcionamento normal.
+
+### Execução reproduzível
+
 - Clonagem do repositório em uma pasta nova.
 - Validação do Docker Compose.
-- Inicialização dos contêineres.
-- Indexação de três documentos novos.
-- Execução de uma pergunta pela rota POST `/perguntar`.
+- Construção e inicialização dos contêineres.
+- Indexação de três documentos.
+- Execução de pergunta pela API de geração.
 - Resposta HTTP 200 com contexto e fontes.
+
+---
 
 ## Limitações conhecidas
 
-- O cliente LLM funciona em modo simulado quando não há chave de API.
+- O LLM utiliza modo simulado quando não existe chave de API externa configurada.
 - O worker utiliza uma fila Redis simples, sem garantia de processamento exatamente uma vez.
-- Em determinadas falhas, mensagens podem ser perdidas ou processadas novamente.
+- Mensagens podem ser perdidas se o worker encerrar durante o processamento.
+- Falhas de comunicação e retentativas podem causar processamento duplicado.
+- O timeout não garante necessariamente o cancelamento da operação subjacente.
 
+---
 
+## Critérios de avaliação
 
-## Participação do grupo
+| Critério | Pontuação |
+|---|---:|
+| Arquitetura e decomposição em serviços | 1,5 |
+| Comunicação REST e mensageria | 1,5 |
+| Resiliência e tratamento de falhas | 1,0 |
+| Execução reproduzível e documentação | 1,0 |
+| **Total** | **5,0** |
 
-As contribuições individuais estão registradas
-no histórico de commits e Pull Requests do GitHub.
+A sofisticação do modelo de inteligência artificial não faz parte da pontuação.
+
+---
+
+## Contribuições do grupo
+
+O projeto foi desenvolvido a partir do kit disponibilizado pelo professor Howard Roatti.
+
+Kit original:
+
+https://github.com/howardroatti/sd-2026-2-kit-c2a2
+
+As contribuições individuais estão registradas no histórico de commits e Pull Requests do repositório do grupo.
+
+**Repositório para entrega:**
+
+https://github.com/Julianaseith/sd-2026-2-kit-c2a2
